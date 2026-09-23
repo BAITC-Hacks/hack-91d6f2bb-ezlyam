@@ -1,7 +1,13 @@
 import OpenAI from "openai";
-import type { AIAnalysis, AnalyzeResponse, Selection, SimulationResult } from "../../../types/simulation";
-import { buildFallbackAnalysis, buildSafeRecommendation } from "../../../lib/fallbackAnalysis";
-import { simulate, SimulationError, STARTING_BUDGET } from "../../../lib/simulation";
+import { CATEGORIES, type AIAnalysis, type AnalyzeResponse, type Selection } from "../../../types/simulation";
+import {
+  findAffordableAlternative,
+  findScoreImprovement,
+  SimulationError,
+  simulate,
+  STARTING_BUDGET,
+} from "../../../lib/simulation";
+import { buildFallbackAnalysis, isAIAnalysis } from "../../../lib/fallbackAnalysis";
 
 export const runtime = "nodejs";
 
@@ -16,123 +22,197 @@ const ANALYSIS_SCHEMA = {
     recommendation: { type: "string" },
   },
   required: ["summary", "strengths", "risks", "tradeoffs", "recommendation"],
-} as const;
+};
 
-function nonemptyText(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0 && value.length <= 1500;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseAnalysis(text: string): AIAnalysis | null {
-  if (!text || text.length > 12_000) return null;
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  if (!nonemptyText(record.summary) || !nonemptyText(record.recommendation)) return null;
-  for (const key of ["strengths", "risks", "tradeoffs"] as const) {
-    const entries = record[key];
-    if (!Array.isArray(entries) || entries.length === 0 || entries.length > 5 || !entries.every(nonemptyText)) {
-      return null;
-    }
-  }
+function isSelection(value: unknown): value is Selection {
+  if (!isRecord(value) || Object.keys(value).length !== CATEGORIES.length) return false;
+  return CATEGORIES.every(
+    (category) =>
+      Object.prototype.hasOwnProperty.call(value, category) &&
+      typeof value[category] === "string" &&
+      (value[category] as string).trim().length > 0,
+  );
+}
+
+function buildScenarioPayload(
+  result: ReturnType<typeof simulate>,
+  improvement: ReturnType<typeof findScoreImprovement>,
+) {
   return {
-    summary: record.summary.trim(),
-    strengths: (record.strengths as string[]).map((item) => item.trim()),
-    risks: (record.risks as string[]).map((item) => item.trim()),
-    tradeoffs: (record.tradeoffs as string[]).map((item) => item.trim()),
-    recommendation: record.recommendation.trim(),
-  };
-}
-
-function modelInput(result: SimulationResult): string {
-  return JSON.stringify({
-    budgetMillionTenge: STARTING_BUDGET,
+    budget: STARTING_BUDGET,
     spent: result.spent,
     remaining: result.remaining,
     scoreBefore: result.baselineScore,
     scoreAfter: result.projectedScore,
-    categoryDeltas: result.categoryDeltas,
+    scoreChange: Number((result.projectedScore - result.baselineScore).toFixed(1)),
+    categoryChanges: result.categoryDeltas,
     districts: result.projectedDistricts.map((district, index) => ({
+      id: district.id,
       name: district.name,
-      before: result.baselineDistricts[index].metrics,
+      before: result.baselineDistricts[index]?.metrics,
       after: district.metrics,
-      scoreDelta: result.districtDeltas[district.id],
+      scoreChange: result.districtDeltas[district.id] ?? 0,
     })),
-    initiatives: result.selectedInitiatives.map((initiative) => ({
+    selectedInitiatives: result.selectedInitiatives.map((initiative) => ({
       title: initiative.title,
       category: initiative.category,
       cost: initiative.cost,
+      effects: initiative.effects,
       risk: initiative.risk,
     })),
-    approvedRecommendation: buildSafeRecommendation(result),
+    computedImprovement: improvement
+      ? {
+          changes: improvement.changes.map(({ category, from, to }) => ({
+            category,
+            from: from.title,
+            to: to.title,
+          })),
+          spent: improvement.spent,
+          projectedScore: improvement.projectedScore,
+        }
+      : null,
+  };
+}
+
+async function requestOpenAIAnalysis(
+  scenario: ReturnType<typeof buildScenarioPayload>,
+  apiKey: string,
+): Promise<AIAnalysis> {
+  const client = new OpenAI({ apiKey, timeout: 20_000, maxRetries: 0 });
+  const response = await client.responses.create({
+    model: process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini",
+    store: false,
+    max_output_tokens: 900,
+    input: [
+      {
+        role: "system",
+        content:
+          "Ты русскоязычный аналитик городских сценариев Qala Balance AI. Объясняй только переданные вычисленные значения. Не пересчитывай и не меняй Score, бюджет, эффекты или выбор. Данные синтетические, поэтому не представляй вывод как прогноз для реальной Астаны. Укажи сильные стороны, риски и компромиссы. В рекомендации опирайся только на computedImprovement; не предлагай меру, которой нет в этой структуре. Если computedImprovement равен null, скажи, что одиночное улучшение не найдено. Ответь по-русски и верни все поля по заданной JSON Schema.",
+      },
+      {
+        role: "user",
+        content: JSON.stringify(scenario),
+      },
+    ],
+    text: {
+      format: {
+        type: "json_schema",
+        name: "qala_balance_analysis",
+        strict: true,
+        schema: ANALYSIS_SCHEMA,
+      },
+    },
   });
+
+  if (response.status !== "completed" || !response.output_text.trim()) {
+    throw new Error("OpenAI did not return a completed structured response.");
+  }
+
+  const parsed: unknown = JSON.parse(response.output_text);
+  if (!isAIAnalysis(parsed)) {
+    throw new Error("OpenAI response did not match the analysis contract.");
+  }
+
+  return parsed;
 }
 
-function errorResponse(code: string, message: string, status: number, overspend = 0): Response {
-  return Response.json({ error: { code, message, overspend } }, { status });
-}
-
-export async function POST(request: Request): Promise<Response> {
+export async function POST(request: Request) {
   let body: unknown;
   try {
     body = await request.json();
   } catch {
-    return errorResponse("INVALID_JSON", "Отправьте JSON с полем selection.", 400);
-  }
-  if (!body || typeof body !== "object" || Array.isArray(body) || !("selection" in body)) {
-    return errorResponse("INVALID_REQUEST", "Отправьте выбор пяти инициатив в поле selection.", 400);
-  }
-
-  let result: SimulationResult;
-  try {
-    result = simulate((body as { selection: Selection }).selection);
-  } catch (error) {
-    if (error instanceof SimulationError) {
-      return errorResponse(error.code, error.message, 422, error.overspend);
-    }
-    return errorResponse("SIMULATION_ERROR", "Не удалось рассчитать сценарий.", 500);
+    return Response.json(
+      { error: { code: "INVALID_JSON", message: "Отправьте корректный JSON." } },
+      { status: 400 },
+    );
   }
 
-  const fallback: AnalyzeResponse = { analysis: buildFallbackAnalysis(result), source: "fallback" };
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
-  if (!apiKey) return Response.json(fallback);
-
-  try {
-    const client = new OpenAI({ apiKey, timeout: 12_000, maxRetries: 0 });
-    const response = await client.responses.create({
-      model: process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini",
-      store: false,
-      instructions: [
-        "Ты аналитик условной городской бюджетной симуляции. Ответь по-русски простым языком.",
-        "Опирайся только на переданный JSON. Не придумывай данные, цены или факты об Астане.",
-        "Бюджет и Score уже рассчитаны кодом; не пересчитывай и не меняй их.",
-        "Явно называй сильные стороны, риски и компромиссы, включая ухудшения.",
-        "Рекомендацию бери только из approvedRecommendation и не предлагай расходов сверх бюджета.",
-        "Не выдавай результат за реальный прогноз будущего города.",
-      ].join(" "),
-      input: modelInput(result),
-      text: {
-        format: {
-          type: "json_schema",
-          name: "qala_balance_analysis",
-          strict: true,
-          schema: ANALYSIS_SCHEMA,
+  if (!isRecord(body) || Object.keys(body).length !== 1 || !isSelection(body.selection)) {
+    return Response.json(
+      {
+        error: {
+          code: "INVALID_SELECTION",
+          message: "Передайте selection с одной инициативой в каждой из пяти категорий.",
         },
       },
-    });
-    if (response.status !== "completed") return Response.json(fallback);
-    const analysis = parseAnalysis(response.output_text);
-    if (!analysis) return Response.json(fallback);
+      { status: 400 },
+    );
+  }
 
-    // The recommendation is always checked by deterministic code, even when AI prose is used.
-    analysis.recommendation = fallback.analysis.recommendation;
-    const payload: AnalyzeResponse = { analysis, source: "openai" };
+  const selection = body.selection;
+  let result: ReturnType<typeof simulate>;
+  try {
+    result = simulate(selection);
+  } catch (error) {
+    if (error instanceof SimulationError) {
+      if (error.code === "OVER_BUDGET") {
+        const alternative = findAffordableAlternative(selection);
+        return Response.json(
+          {
+            error: {
+              code: error.code,
+              message: error.message,
+              overspend: error.overspend,
+              budget: STARTING_BUDGET,
+            },
+            suggestion: alternative
+              ? {
+                  selection: alternative.selection,
+                  changes: alternative.changes.map(({ category, from, to }) => ({
+                    category,
+                    from: from.title,
+                    to: to.title,
+                  })),
+                  spent: alternative.spent,
+                  remaining: STARTING_BUDGET - alternative.spent,
+                  projectedScore: alternative.projectedScore,
+                }
+              : null,
+          },
+          { status: 422 },
+        );
+      }
+
+      return Response.json(
+        { error: { code: error.code, message: error.message } },
+        { status: 400 },
+      );
+    }
+
+    return Response.json(
+      { error: { code: "SIMULATION_FAILED", message: "Не удалось рассчитать сценарий." } },
+      { status: 500 },
+    );
+  }
+
+  const improvement = findScoreImprovement(selection);
+  const fallback = buildFallbackAnalysis(result, improvement);
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+
+  if (!apiKey) {
+    const payload: AnalyzeResponse = { analysis: fallback, source: "fallback" };
+    return Response.json(payload);
+  }
+
+  try {
+    const scenario = buildScenarioPayload(result, improvement);
+    const analysis = await requestOpenAIAnalysis(scenario, apiKey);
+    const payload: AnalyzeResponse = {
+      analysis: {
+        ...analysis,
+        // Keep the recommendation tied to the deterministic affordable swap.
+        recommendation: fallback.recommendation,
+      },
+      source: "openai",
+    };
     return Response.json(payload);
   } catch {
-    return Response.json(fallback);
+    console.warn("OpenAI analysis unavailable or invalid; returning deterministic fallback.");
+    const payload: AnalyzeResponse = { analysis: fallback, source: "fallback" };
+    return Response.json(payload);
   }
 }

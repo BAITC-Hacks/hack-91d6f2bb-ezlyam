@@ -41,6 +41,12 @@ npm run dev
 
 Для AI-анализа создайте локальный `.env.local` на основе `.env.example`:
 
+```bash
+cp .env.example .env.local
+```
+
+В Windows PowerShell используйте `Copy-Item .env.example .env.local`. Затем задайте ключ:
+
 ```env
 OPENAI_API_KEY=ваш_ключ
 OPENAI_MODEL=gpt-4o-mini
@@ -87,7 +93,7 @@ src/
 { "selection": { "transport": "bike-network", "greenery": "courtyard-trees", "social": "mobile-clinics", "safety": "street-lighting", "services": "service-kiosks" } }
 ```
 
-Сервер заново проверяет выбор и пересчитывает сценарий, поэтому не доверяет присланным из браузера суммам или Score. Успешный ответ имеет вид `{ "analysis": { "summary": "...", "strengths": ["..."], "risks": ["..."], "tradeoffs": ["..."], "recommendation": "..." }, "source": "openai" }`. При отсутствии ключа или ошибке модели `source` равен `fallback`; при некорректном выборе сервер возвращает ошибку 400/422.
+Сервер заново проверяет выбор и пересчитывает сценарий, поэтому не доверяет присланным из браузера суммам или Score. Успешный ответ имеет вид `{ "analysis": { "summary": "...", "strengths": ["..."], "risks": ["..."], "tradeoffs": ["..."], "recommendation": "..." }, "source": "openai" }`. При отсутствии ключа или ошибке модели `source` равен `fallback`. Неполный или неверный выбор возвращает HTTP 400; перерасход — HTTP 422 с суммой превышения и доступной комбинацией в `suggestion`.
 
 ## Синтетические данные
 
