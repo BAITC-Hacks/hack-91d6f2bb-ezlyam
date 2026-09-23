@@ -13,7 +13,7 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-Откройте адрес из терминала (обычно http://localhost:3000). Остановка — Ctrl+C. Если `node` не найден, установите Node.js и заново откройте терминал. Если PowerShell блокирует `pnpm.ps1`, используйте `pnpm.cmd` вместо `pnpm`.
+Откройте адрес из терминала (обычно http://localhost:3001). Остановка — Ctrl+C. Если `node` не найден, установите Node.js и заново откройте терминал. Если PowerShell блокирует `pnpm.ps1`, используйте `pnpm.cmd` вместо `pnpm`.
 
 Production-запуск:
 
