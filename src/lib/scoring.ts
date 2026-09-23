@@ -5,8 +5,6 @@ export const METRIC_CODES: readonly MetricCode[] = ["T1", "T2", "E1", "E2", "S1"
 export const SCORE_WEIGHTS: Readonly<Metrics> = { T1: 0.10, T2: 0.10, E1: 0.09, E2: 0.11, S1: 0.11, S2: 0.11, B1: 0.09, B2: 0.09, C1: 0.10, C2: 0.10 };
 
 export const clampMetric = (value: number): number => Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0;
-const roundTwo = (value: number): number => Math.round((value + Number.EPSILON) * 100) / 100;
-const roundOne = (value: number): number => Math.round((value + Number.EPSILON) * 10) / 10;
 
 export function calculateDistrictScore(district: District): number {
   return METRIC_CODES.reduce((sum, code) => sum + clampMetric(district.metrics[code]) * SCORE_WEIGHTS[code], 0);
@@ -22,11 +20,11 @@ export function scoreBreakdown(districtsToScore: readonly District[]): ScoreBrea
   const populationWeightedAverage = districtsToScore.reduce((sum, district) => sum + district.populationShare * districtScores[district.id], 0);
   const weakestDistrictScore = Math.min(...districtsToScore.map((district) => districtScores[district.id]));
   const criticalCount = countCriticalValues(districtsToScore);
-  const score = roundTwo(0.7 * populationWeightedAverage + 0.3 * weakestDistrictScore - criticalCount);
+  const score = 0.7 * populationWeightedAverage + 0.3 * weakestDistrictScore - criticalCount;
   return {
-    districtScores: Object.fromEntries(Object.entries(districtScores).map(([id, value]) => [id, roundTwo(value)])) as Record<DistrictId, number>,
-    populationWeightedAverage: roundTwo(populationWeightedAverage),
-    weakestDistrictScore: roundTwo(weakestDistrictScore),
+    districtScores,
+    populationWeightedAverage,
+    weakestDistrictScore,
     criticalCount,
     inequalityPenalty: criticalCount,
     score,
@@ -39,14 +37,14 @@ export function scoreDistricts(districtsToScore: readonly District[]): number {
 
 export function averageMetric(districtsToScore: readonly District[], code: MetricCode): number {
   if (districtsToScore.length === 0) return 0;
-  return roundOne(districtsToScore.reduce((sum, district) => sum + clampMetric(district.metrics[code]), 0) / districtsToScore.length);
+  return districtsToScore.reduce((sum, district) => sum + district.populationShare * clampMetric(district.metrics[code]), 0);
 }
 
 export function averageCategory(districtsToScore: readonly District[], category: Category): number {
   const codesByCategory: Record<Category, MetricCode[]> = { transport: ["T1", "T2"], ecology: ["E1", "E2"], social: ["S1", "S2"], safety: ["B1", "B2"], services: ["C1", "C2"] };
   const codes = codesByCategory[category];
   if (districtsToScore.length === 0) return 0;
-  return roundOne(districtsToScore.reduce((sum, district) => sum + codes.reduce((inner, code) => inner + clampMetric(district.metrics[code]), 0) / codes.length, 0) / districtsToScore.length);
+  return districtsToScore.reduce((sum, district) => sum + district.populationShare * codes.reduce((inner, code) => inner + clampMetric(district.metrics[code]), 0) / codes.length, 0);
 }
 
 export function baselineScore(): number {

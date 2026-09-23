@@ -1,19 +1,16 @@
 # Qala Balance AI repository guidance
 
-The current implementation is developed in `feature/rebuild`. The older three-agent branches are historical and must not be used as the source of current product rules. Keep the history intact; do not force push or rewrite `main`.
+Read README.md and docs/TEAM_WORKFLOW.md before changing the app. The supplied district dataset and current user brief override historical prompts and earlier design choices.
 
-Read `README.md` and `docs/TEAM_WORKFLOW.md` before changing the app. The user's product brief and supplied district dataset take precedence over older prompts in Git history.
+## Model contract
 
-## Current model contract
+- Selection is Decision[]: exactly five unique M1–M14 initiatives, at most two per category.
+- Budget is 100 conditional units; no currency conversion is specified.
+- District measures require districtId; city measures omit it and affect all five districts.
+- simulate() validates before calculating. Invalid scenarios have no Score.
+- Sum lagged effects, then fixed synergies, then clamp indicators once. Keep numeric precision until display.
+- The server recomputes selection. OpenAI only explains ready calculations.
+- Official example: M7/M8/M10 in Nura, M12 city, M5 Saryarka; cost 95, Score 56.54307.
+- AI fallback must be labeled as local analysis, not a live model response.
 
-- `src/types/simulation.ts` contains the shared client/server types.
-- Exactly one initiative is selected in each of `transport`, `ecology`, `social`, `safety`, and `services`.
-- `Selection` maps each category to `{ initiativeId, districtId? }`. District measures require a district; city measures must omit it.
-- `src/data/districts.ts` has five synthetic districts and ten `T1`–`C2` indicators; `src/data/initiatives.ts` has `M1`–`M14`.
-- `STARTING_BUDGET` is 100 conditional units, displayed as 1,000 million ₸. One unit equals 10 million ₸.
-- `simulate()` validates selection, budget, and conflicts, then applies lagged effects, synergy, clamping, and the deterministic Score. Never duplicate the formula in UI or AI code.
-- `POST /api/analyze` recomputes the scenario on the server. OpenAI explains the computed data; missing or invalid OpenAI output uses the deterministic fallback.
-
-The dataset's original selection rule allowed two measures in one direction. This interface deliberately uses one per direction. Consequently, two catalog synergies cannot occur in this version; `README.md` documents the limitation.
-
-Before committing, run tests, TypeScript checking, lint, production build, and `git diff --check`. Do not commit `.env.local` or an API key.
+Run pnpm test, pnpm typecheck, pnpm lint, pnpm check:example, pnpm build before delivery. In a Git checkout run git diff --check. Do not commit .env.local or secrets. Preserve existing Git history; do not force push or change main directly. An extracted ZIP has no branch or upstream until explicitly connected to the team's repository.

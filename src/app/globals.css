@@ -1,5 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap');
-
 :root { --ink: #17231f; --muted: #6b7771; --line: #dfe7e1; --paper: #f6f8f5; --card: #fff; --green: #17845a; --green-dark: #0b5e40; --red: #be4f47; }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--paper); color: var(--ink); font-family: 'DM Sans', sans-serif; }
@@ -30,3 +28,48 @@ button { cursor: pointer; }
 .analysis-result li { margin: 6px 0; }
 @media (max-width: 720px) { .category-results { grid-template-columns: repeat(2, minmax(0, 1fr)); } .district-results > div { grid-template-columns: 1fr auto; } .district-results b { grid-column: 2; } }
 @media (prefers-reduced-motion: reduce) { .budget-track span { transition: none; } }
+/* System fonts keep the demo usable without a connection to Google Fonts. */
+body { font-family: "Segoe UI", Arial, sans-serif; }
+.hero h1, h2, h3, .brand-mark { font-family: "Segoe UI", Arial, sans-serif; }
+.budget-card strong, .score-values strong { font-family: "Segoe UI", Arial, sans-serif; }
+.budget-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.hero-actions { display: flex; align-items: center; gap: 16px; margin-top: 24px; flex-wrap: wrap; }
+.hero-actions span, .section-hint { color: var(--muted); font-size: 13px; line-height: 1.6; }
+.budget-card { margin-bottom: 24px; }
+.over-budget span { background: var(--red); }
+.rules { margin-bottom: 36px; padding: 18px 22px; border: 1px solid var(--line); border-radius: 12px; background: white; }
+.rules p { font-size: 13px; line-height: 1.7; }
+summary { cursor: pointer; font-weight: 600; }
+summary:focus-visible, button:focus-visible, .table-scroll:focus-visible { outline: 3px solid #17845a; outline-offset: 4px; }
+.section-heading { gap: 16px; }
+.category-counts { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.category-counts span { font-size: 12px; color: var(--green-dark); background: #e8f3ec; padding: 7px 11px; border-radius: 20px; }
+.category-card { min-width: 0; }
+.category-card select { min-width: 0; max-width: 100%; text-overflow: ellipsis; }
+.cost-line { flex-wrap: wrap; }
+.empty-state p + p { margin-top: 12px; }
+.formula-card { background: #edf5ef; padding: 16px 20px; border-radius: 12px; margin-top: 20px; font-size: 13px; line-height: 1.7; }
+.formula-card strong { overflow-wrap: anywhere; }
+.formula-card p { margin: 5px 0; }
+.result-panel ul { padding-left: 20px; font-size: 13px; line-height: 1.7; }
+.result-details { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 18px; font-size: 13px; }
+.critical-note { background: #fff0ee; color: #8d3833; padding: 12px; border-radius: 8px; font-size: 13px; }
+.table-scroll { overflow-x: auto; margin: 16px 0; max-width: 100%; }
+table { border-collapse: collapse; width: 100%; font-size: 12px; text-align: left; }
+th, td { padding: 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th small { display: block; font-size: 10px; color: var(--muted); white-space: normal; min-width: 80px; max-width: 100px; font-weight: 400; margin-top: 4px; }
+.critical-cell { background: #fff0ee; color: #8d3833; }
+.analysis-card .alert { grid-column: 1 / -1; margin: 0; }
+@media (max-width: 720px) {
+  .hero { padding-top: 40px; }
+  .budget-card { top: 0; padding: 14px 16px; }
+  .budget-card strong { font-size: 22px; }
+  .budget-track { margin: 12px 0 10px; }
+  .budget-numbers { gap: 8px; flex-wrap: wrap; }
+  .budget-numbers b { margin-left: 3px; }
+  .progress-count { font-size: 12px; }
+  .hero-actions { gap: 10px; }
+  .result-panel { padding: 18px; }
+  .score-values { flex-wrap: wrap; gap: 8px; }
+  .rules { padding: 16px; }
+}

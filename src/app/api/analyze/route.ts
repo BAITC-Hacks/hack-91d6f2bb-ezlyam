@@ -1,224 +1,102 @@
 import OpenAI from "openai";
-import { CATEGORIES, type AIAnalysis, type AnalyzeResponse, type Selection } from "../../../types/simulation";
-import {
-  findAffordableAlternative,
-  findScoreImprovement,
-  SimulationError,
-  simulate,
-  STARTING_BUDGET,
-} from "../../../lib/simulation";
-import { buildFallbackAnalysis, isAIAnalysis } from "../../../lib/fallbackAnalysis";
+import { type AIAnalysis, type AnalyzeResponse, type Selection } from "../../../types/simulation";
+import { findScoreImprovement, SimulationError, simulate, STARTING_BUDGET } from "../../../lib/simulation";
+import { buildFallbackAnalysis } from "../../../lib/fallbackAnalysis";
 
 export const runtime = "nodejs";
-
-const ANALYSIS_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
+const EXPLANATION_SCHEMA = {
+  type: "object", additionalProperties: false,
   properties: {
-    summary: { type: "string" },
     strengths: { type: "array", items: { type: "string" } },
     risks: { type: "array", items: { type: "string" } },
-    tradeoffs: { type: "array", items: { type: "string" } },
-    recommendation: { type: "string" },
   },
-  required: ["summary", "strengths", "risks", "tradeoffs", "recommendation"],
+  required: ["strengths", "risks"],
 };
+type Explanation = Pick<AIAnalysis, "strengths" | "risks">;
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isSelection(value: unknown): value is Selection {
-  if (!isRecord(value) || Object.keys(value).length !== CATEGORIES.length) return false;
-  return CATEGORIES.every((category) => {
-    const decision = value[category];
-    return isRecord(decision) && typeof decision.initiativeId === "string" &&
-      decision.initiativeId.trim().length > 0 &&
-      (decision.districtId === undefined || typeof decision.districtId === "string") &&
-      Object.keys(decision).every((key) => key === "initiativeId" || key === "districtId");
+function isExplanation(value: unknown): value is Explanation {
+  if (!isRecord(value) || Object.keys(value).length !== 2) return false;
+  return ["strengths", "risks"].every((field) => {
+    const list = value[field];
+    // All numeric claims and recommendations are rendered from deterministic code.
+    return Array.isArray(list) && list.length >= 1 && list.length <= 5 && list.every((text) =>
+      typeof text === "string" && text.trim().length > 0 && text.length <= 600 && !/[\d\p{N}]/u.test(text));
   });
 }
 
-function buildScenarioPayload(
-  result: ReturnType<typeof simulate>,
-  improvement: ReturnType<typeof findScoreImprovement>,
-) {
+function buildScenarioPayload(result: ReturnType<typeof simulate>) {
   return {
-    moneyUnit: "million KZT",
-    budgetMillionTenge: STARTING_BUDGET * 10,
-    spentMillionTenge: result.spent * 10,
-    remainingMillionTenge: result.remaining * 10,
-    scoreBefore: result.baselineScore,
-    scoreAfter: result.projectedScore,
-    scoreChange: Number((result.projectedScore - result.baselineScore).toFixed(2)),
-    criticalBefore: result.baselineBreakdown.criticalCount,
-    criticalAfter: result.projectedBreakdown.criticalCount,
+    moneyUnit: "conditional units, no currency conversion",
+    budget: STARTING_BUDGET, spent: result.spent, remaining: result.remaining,
+    scoreBefore: result.baselineScore, scoreAfter: result.projectedScore,
+    scoreChange: result.projectedScore - result.baselineScore,
+    baselineBreakdown: result.baselineBreakdown, projectedBreakdown: result.projectedBreakdown,
     categoryChanges: result.categoryDeltas,
     districts: result.projectedDistricts.map((district, index) => ({
-      id: district.id,
-      name: district.name,
-      before: result.baselineDistricts[index]?.metrics,
-      after: district.metrics,
-      scoreChange: result.districtDeltas[district.id] ?? 0,
+      id: district.id, name: district.name, populationShare: district.populationShare,
+      before: result.baselineDistricts[index].metrics, after: district.metrics,
+      scoreChange: result.districtDeltas[district.id],
     })),
     selectedInitiatives: result.selectedInitiatives.map((initiative) => ({
-      id: initiative.id,
-      title: initiative.title,
-      category: initiative.category,
-      costMillionTenge: initiative.cost * 10,
-      lag: initiative.lag,
-      effects: initiative.effects,
-      risk: initiative.risk,
+      id: initiative.id, title: initiative.title, category: initiative.category,
+      decision: result.selection.find((decision) => decision.initiativeId === initiative.id),
+      cost: initiative.cost, lag: initiative.lag,
+      realizedContribution: result.contributions.find((item) => item.initiativeId === initiative.id),
+      qualitativeRisk: initiative.risk,
     })),
-    computedImprovement: improvement
-      ? {
-          changes: improvement.changes.map(({ category, from, to }) => ({
-            category,
-            from,
-            to,
-          })),
-          spentMillionTenge: improvement.spent * 10,
-          projectedScore: improvement.projectedScore,
-        }
-      : null,
+    synergies: result.synergies,
   };
 }
 
-async function requestOpenAIAnalysis(
-  scenario: ReturnType<typeof buildScenarioPayload>,
-  apiKey: string,
-): Promise<AIAnalysis> {
+async function requestOpenAIExplanation(result: ReturnType<typeof simulate>, apiKey: string): Promise<Explanation> {
   const client = new OpenAI({ apiKey, timeout: 20_000, maxRetries: 0 });
   const response = await client.responses.create({
     model: process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini",
-    store: false,
-    max_output_tokens: 900,
+    store: false, max_output_tokens: 900,
     input: [
-      {
-        role: "system",
-        content:
-          "Ты русскоязычный аналитик городских сценариев Qala Balance AI. Объясняй только переданные вычисленные значения. Не пересчитывай и не меняй Score, бюджет, эффекты или выбор. Данные синтетические, поэтому не представляй вывод как прогноз для реальной Астаны. Укажи сильные стороны, риски и компромиссы. В рекомендации опирайся только на computedImprovement; не предлагай меру, которой нет в этой структуре. Если computedImprovement равен null, скажи, что одиночное улучшение не найдено. Ответь по-русски и верни все поля по заданной JSON Schema.",
-      },
-      {
-        role: "user",
-        content: JSON.stringify(scenario),
-      },
+      { role: "system", content: "Ты русскоязычный аналитик Qala Balance AI. Получаешь готовые расчёты синтетической модели. Объясни сильные стороны и риски конкретного сценария, учитывая районный охват, лаги, синергии и оставшиеся критические показатели. Не считай числа, не вводи новые эффекты и не представляй вывод как реальный прогноз. Пиши только качественные объяснения: без цифр, процентов, числовых утверждений, кодов мер или показателей. Используй названия районов и мероприятий. Бюджет, Score, компромиссы и проверенные рекомендации приложение покажет отдельно из расчёта. Верни только strengths и risks: от одного до пяти коротких предложений в каждом массиве." },
+      { role: "user", content: JSON.stringify(buildScenarioPayload(result)) },
     ],
-    text: {
-      format: {
-        type: "json_schema",
-        name: "qala_balance_analysis",
-        strict: true,
-        schema: ANALYSIS_SCHEMA,
-      },
-    },
+    text: { format: { type: "json_schema", name: "qala_balance_explanation", strict: true, schema: EXPLANATION_SCHEMA } },
   });
-
-  if (response.status !== "completed" || !response.output_text.trim()) {
-    throw new Error("OpenAI did not return a completed structured response.");
-  }
-
+  if (response.status !== "completed" || !response.output_text?.trim()) throw new Error("Incomplete AI response");
   const parsed: unknown = JSON.parse(response.output_text);
-  if (!isAIAnalysis(parsed)) {
-    throw new Error("OpenAI response did not match the analysis contract.");
-  }
-
+  if (!isExplanation(parsed)) throw new Error("Invalid qualitative explanation");
   return parsed;
 }
 
 export async function POST(request: Request) {
   let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return Response.json(
-      { error: { code: "INVALID_JSON", message: "Отправьте корректный JSON." } },
-      { status: 400 },
-    );
+  try { body = await request.json(); }
+  catch { return Response.json({ error: { code: "INVALID_JSON", message: "Отправьте корректный JSON." } }, { status: 400 }); }
+  if (!isRecord(body) || Object.keys(body).length !== 1 || !Array.isArray(body.selection)) {
+    return Response.json({ error: { code: "INVALID_SELECTION", message: "Передайте только selection: массив из пяти решений с initiativeId и районом для районных мер." } }, { status: 400 });
   }
-
-  if (!isRecord(body) || Object.keys(body).length !== 1 || !isSelection(body.selection)) {
-    return Response.json(
-      {
-        error: {
-          code: "INVALID_SELECTION",
-          message: "Передайте selection с пятью решениями: initiativeId и, для районных мер, districtId.",
-        },
-      },
-      { status: 400 },
-    );
-  }
-
-  const selection = body.selection;
   let result: ReturnType<typeof simulate>;
   try {
-    result = simulate(selection);
+    // simulate validates untrusted JSON at runtime before using any decision.
+    result = simulate(body.selection as Selection);
   } catch (error) {
     if (error instanceof SimulationError) {
-      if (error.code === "OVER_BUDGET") {
-        const alternative = findAffordableAlternative(selection);
-        return Response.json(
-          {
-            error: {
-              code: error.code,
-              message: error.message,
-              overspend: error.overspend,
-              budget: STARTING_BUDGET,
-            },
-            suggestion: alternative
-              ? {
-                  selection: alternative.selection,
-                  changes: alternative.changes.map(({ category, from, to }) => ({
-                    category,
-                    from,
-                    to,
-                  })),
-                  spent: alternative.spent,
-                  remaining: STARTING_BUDGET - alternative.spent,
-                  projectedScore: alternative.projectedScore,
-                }
-              : null,
-          },
-          { status: 422 },
-        );
-      }
-
-      return Response.json(
-        { error: { code: error.code, message: error.message } },
-        { status: 400 },
-      );
+      return Response.json({ error: { code: error.code, message: error.message, ...(error.code === "OVER_BUDGET" ? { overspend: error.overspend, budget: STARTING_BUDGET } : {}) } }, { status: error.code === "OVER_BUDGET" ? 422 : 400 });
     }
-
-    return Response.json(
-      { error: { code: "SIMULATION_FAILED", message: "Не удалось рассчитать сценарий." } },
-      { status: 500 },
-    );
+    return Response.json({ error: { code: "SIMULATION_FAILED", message: "Не удалось рассчитать сценарий." } }, { status: 500 });
   }
-
-  const improvement = findScoreImprovement(selection);
+  const improvement = findScoreImprovement(result.selection);
   const fallback = buildFallbackAnalysis(result, improvement);
   const apiKey = process.env.OPENAI_API_KEY?.trim();
-
   if (!apiKey) {
-    const payload: AnalyzeResponse = { analysis: fallback, source: "fallback" };
+    const payload: AnalyzeResponse = { analysis: fallback, source: "fallback", fallbackReason: "missing_key" };
     return Response.json(payload);
   }
-
   try {
-    const scenario = buildScenarioPayload(result, improvement);
-    const analysis = await requestOpenAIAnalysis(scenario, apiKey);
-    const payload: AnalyzeResponse = {
-      analysis: {
-        ...analysis,
-        // Keep the recommendation tied to the deterministic affordable swap.
-        recommendation: fallback.recommendation,
-      },
-      source: "openai",
-    };
+    const explanation = await requestOpenAIExplanation(result, apiKey);
+    const payload: AnalyzeResponse = { analysis: { ...fallback, ...explanation }, source: "openai" };
     return Response.json(payload);
   } catch {
-    console.warn("OpenAI analysis unavailable or invalid; returning deterministic fallback.");
-    const payload: AnalyzeResponse = { analysis: fallback, source: "fallback" };
+    console.warn("OpenAI explanation unavailable or invalid; returning local analysis.");
+    const payload: AnalyzeResponse = { analysis: fallback, source: "fallback", fallbackReason: "unavailable" };
     return Response.json(payload);
   }
 }

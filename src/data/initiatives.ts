@@ -1,6 +1,8 @@
 import type { Initiative } from "../types/simulation";
 
-/** Стоимость — условные единицы: 100 единиц = 1 000 млн ₸. */
+/** Стоимость в условных единицах датасета; конвертация в валюту не задана.
+ * Descriptions and qualitative risks are authored explanations, not extra numeric effects.
+ */
 export const initiatives: Initiative[] = [
   { id: "M1", title: "Выделенные полосы для автобусов", description: "Выделенные полосы на загруженных маршрутах.", category: "transport", type: "district", cost: 18, lag: 2, effects: { T1: 6, T2: 9 }, risk: "Перераспределение полос может замедлить личный транспорт." },
   { id: "M2", title: "Умные светофоры", description: "Адаптивное управление городскими перекрёстками.", category: "transport", type: "city", cost: 22, lag: 2, effects: { T1: 4, B2: 3 }, risk: "Эффект зависит от качества датчиков и настройки алгоритмов." },

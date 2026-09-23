@@ -1,4 +1,5 @@
 import { initiatives } from "../data/initiatives";
+import { districts } from "../data/districts";
 import { CATEGORIES, type AIAnalysis, type Category, type ScenarioSuggestion, type SimulationResult } from "../types/simulation";
 
 const names: Record<Category, string> = {
@@ -6,15 +7,15 @@ const names: Record<Category, string> = {
   safety: "безопасность", services: "городские сервисы",
 };
 const number = (value: number) => new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(value);
-const money = (units: number) => `${number(units * 10)} млн ₸`;
+const money = (units: number) => `${number(units)} усл. ед.`;
 
 function recommendation(suggestion: ScenarioSuggestion | null): string {
   if (!suggestion) return "Одиночной замены, которая повышает Score и сохраняет бюджет, не найдено. Сравните другой набор решений.";
   const change = suggestion.changes[0];
   const from = initiatives.find((item) => item.id === change.from.initiativeId)!;
   const to = initiatives.find((item) => item.id === change.to.initiativeId)!;
-  const district = change.to.districtId ? ` в районе ${change.to.districtId}` : " для всего города";
-  return `В направлении «${names[change.category]}» замените «${from.title}» на «${to.title}»${district}. Расход ${money(suggestion.spent)}, расчётный Score ${number(suggestion.projectedScore)}.`;
+  const district = change.to.districtId ? ` в районе ${districts.find((item) => item.id === change.to.districtId)!.name}` : " для всего города";
+  return `Замените решение «${from.id} · ${from.title}» на «${to.id} · ${to.title}»${district}. Расход ${money(suggestion.spent)}, расчётный Score ${number(suggestion.projectedScore)}. Это проверенная одиночная замена, а не глобальный оптимум.`;
 }
 
 /** Объяснение составляется только из результатов детерминированного расчёта. */
@@ -41,11 +42,14 @@ export function buildFallbackAnalysis(result: SimulationResult, improvement: Sce
         ? `Наибольший прирост районного балла — ${bestDistrict.name}: +${number(result.districtDeltas[bestDistrict.id])}.`
         : "Баллы районов не выросли; стоит пересмотреть распределение мер.",
     ],
-    risks: risks.length ? risks.slice(0, 3) : ["Риски выбранных мероприятий не указаны."],
+    risks: risks.length ? risks : ["Риски выбранных мероприятий не указаны."],
     tradeoffs: [
       `Остаток бюджета: ${money(result.remaining)}; неиспользованные средства не увеличивают Score.`,
       `К концу сценария самый слабый район — ${weakest.name}: ${number(result.projectedBreakdown.weakestDistrictScore)} балла.`,
       `Критических показателей ниже 40: ${result.projectedBreakdown.criticalCount}; штраф в формуле Score: ${number(result.projectedBreakdown.inequalityPenalty)}.`,
+      result.synergies.length
+        ? `Синергии без уменьшения лагом: ${result.synergies.map((item) => `${item.pair.join(" + ")} → ${item.metric} +${item.bonus}, ${districts.find((district) => district.id === item.districtId)!.name}`).join("; ")}.`
+        : "Синергий в выбранном наборе нет.",
       negative.length
         ? `Снижение среднего показателя: ${negative.map((item) => `${names[item.category]} ${number(item.delta)}`).join(", ")}.`
         : "Средние показатели всех направлений не снизились.",

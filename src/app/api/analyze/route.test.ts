@@ -1,106 +1,125 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { POST } from "./route";
+import { DATASET_EXAMPLE, simulate } from "../../../lib/simulation";
+import { isAIAnalysis } from "../../../lib/fallbackAnalysis";
 
-const selection = {
-  transport: { initiativeId: "M1", districtId: "nura" },
-  ecology: { initiativeId: "M5", districtId: "saryarka" },
-  social: { initiativeId: "M7", districtId: "nura" },
-  safety: { initiativeId: "M10", districtId: "nura" },
-  services: { initiativeId: "M12" },
-};
+const request = (body: unknown) => new Request("http://localhost/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
-function request(body: unknown): Request {
-  return new Request("http://localhost/api/analyze", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+async function withMock(action: () => Promise<void>, fetchMock?: typeof fetch) {
+  const oldKey = process.env.OPENAI_API_KEY;
+  const oldFetch = globalThis.fetch;
+  if (fetchMock) { process.env.OPENAI_API_KEY = "test-key"; globalThis.fetch = fetchMock; }
+  else delete process.env.OPENAI_API_KEY;
+  try { await action(); }
+  finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = oldKey;
+  }
 }
 
-test("valid selection returns a deterministic Russian fallback without a key", async () => {
-  const oldKey = process.env.OPENAI_API_KEY;
-  delete process.env.OPENAI_API_KEY;
-  try {
-    const response = await POST(request({ selection, projectedScore: 9999 }));
-    // Only a selection is accepted, so client-provided numbers cannot influence the result.
-    assert.equal(response.status, 400);
-    const validResponse = await POST(request({ selection }));
-    assert.equal(validResponse.status, 200);
-    const body = await validResponse.json();
-    assert.equal(body.source, "fallback");
-    assert.match(body.analysis.summary, /52,56/);
-    assert.ok(body.analysis.strengths.length > 0);
-    assert.ok(body.analysis.risks.length > 0);
-    assert.ok(body.analysis.tradeoffs.length > 0);
-    assert.ok(body.analysis.recommendation.length > 0);
-  } finally {
-    if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
-    else process.env.OPENAI_API_KEY = oldKey;
-  }
-});
+const modelResponse = (text: unknown, status = "completed") => new Response(JSON.stringify({
+  id: "resp_test", object: "response", status,
+  output: [{ id: "msg_test", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: JSON.stringify(text), annotations: [] }] }],
+}), { status: 200, headers: { "Content-Type": "application/json" } });
 
-test("invalid JSON, incomplete selection, and invalid district are rejected", async () => {
-  const malformed = new Request("http://localhost/api/analyze", { method: "POST", body: "{" });
-  assert.equal((await POST(malformed)).status, 400);
-  assert.equal((await POST(request({ selection: { ...selection, social: undefined } }))).status, 400);
-  const invalidDistrict = await POST(request({ selection: { ...selection, transport: { initiativeId: "M1", districtId: "unknown" } } }));
-  assert.equal(invalidDistrict.status, 400);
-  assert.equal((await invalidDistrict.json()).error.code, "UNKNOWN_DISTRICT");
-});
-
-test("over-budget selection returns a valid affordable suggestion", async () => {
-  const expensive = { ...selection, transport: { initiativeId: "M3", districtId: "nura" }, services: { initiativeId: "M13", districtId: "almaty" } };
-  const response = await POST(request({ selection: expensive }));
-  assert.equal(response.status, 422);
-  const body = await response.json();
-  assert.equal(body.error.overspend, 19);
-  assert.ok(body.suggestion.spent <= 100);
-  assert.equal(body.suggestion.remaining, 100 - body.suggestion.spent);
-});
-
-test("malformed model response falls back without losing the scenario", async () => {
-  const oldKey = process.env.OPENAI_API_KEY;
-  const oldFetch = globalThis.fetch;
-  process.env.OPENAI_API_KEY = "test-key";
-  globalThis.fetch = async () => new Response(JSON.stringify({ id: "resp_test", object: "response", status: "completed", output: [] }), {
-    status: 200, headers: { "Content-Type": "application/json" },
-  });
-  try {
-    const response = await POST(request({ selection }));
-    assert.equal(response.status, 200);
-    assert.equal((await response.json()).source, "fallback");
-  } finally {
-    globalThis.fetch = oldFetch;
-    if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
-    else process.env.OPENAI_API_KEY = oldKey;
-  }
-});
-
-test("a valid structured model response keeps the computed recommendation", async () => {
-  const oldKey = process.env.OPENAI_API_KEY;
-  const oldFetch = globalThis.fetch;
-  process.env.OPENAI_API_KEY = "test-key";
-  const modelAnalysis = {
-    summary: "Сценарий улучшает качество городской среды.",
-    strengths: ["Сильный эффект для транспорта."],
-    risks: ["Есть задержка эффекта."],
-    tradeoffs: ["Бюджет ограничивает другие меры."],
-    recommendation: "Придуманная моделью рекомендация",
-  };
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    id: "resp_test", object: "response", created_at: 1, status: "completed",
-    output: [{ id: "msg_test", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: JSON.stringify(modelAnalysis), annotations: [] }] }],
-  }), { status: 200, headers: { "Content-Type": "application/json" } });
-  try {
-    const response = await POST(request({ selection }));
+test("official two-social scenario returns clearly labeled Russian fallback without a key", async () => {
+  await withMock(async () => {
+    const response = await POST(request({ selection: DATASET_EXAMPLE }));
     assert.equal(response.status, 200);
     const body = await response.json();
-    assert.equal(body.source, "openai");
-    assert.equal(body.analysis.summary, modelAnalysis.summary);
-    assert.notEqual(body.analysis.recommendation, modelAnalysis.recommendation);
-  } finally {
-    globalThis.fetch = oldFetch;
-    if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
-    else process.env.OPENAI_API_KEY = oldKey;
+    assert.equal(body.source, "fallback");
+    assert.equal(body.fallbackReason, "missing_key");
+    assert.match(body.analysis.summary, /52,56/);
+    assert.match(body.analysis.summary, /56,54/);
+    assert.match(body.analysis.summary, /95 усл/);
+    assert.doesNotMatch(JSON.stringify(body), /₸|млн/);
+    assert.ok(isAIAnalysis(body.analysis));
+    assert.match(body.analysis.tradeoffs.join(" "), /M10 \+ M12/);
+  });
+});
+
+test("malformed JSON, object-shaped old contract and client-provided numbers fail", async () => {
+  assert.equal((await POST(new Request("http://localhost/api/analyze", { method: "POST", body: "{" }))).status, 400);
+  for (const body of [null, {}, { selection: {} }, { selection: DATASET_EXAMPLE, projectedScore: 9999 }, { selection: DATASET_EXAMPLE.slice(0, 4) }]) {
+    const response = await POST(request(body));
+    assert.equal(response.status, 400);
+    assert.deepEqual(Object.keys(await response.json()), ["error"]);
   }
+});
+
+test("all runtime validation errors return only a reason, never Score or AI output", async () => {
+  const cases: Array<[unknown[], string]> = [
+    [[null, ...DATASET_EXAMPLE.slice(1)], "UNKNOWN_INITIATIVE"],
+    [[{ initiativeId: "M99" }, ...DATASET_EXAMPLE.slice(1)], "UNKNOWN_INITIATIVE"],
+    [[{ initiativeId: "M7" }, ...DATASET_EXAMPLE.slice(1)], "MISSING_DISTRICT"],
+    [[{ initiativeId: "M7", districtId: "unknown" }, ...DATASET_EXAMPLE.slice(1)], "UNKNOWN_DISTRICT"],
+    [[{ initiativeId: "M7", districtId: "esil" }, ...DATASET_EXAMPLE.slice(0, 4)], "DUPLICATE_INITIATIVE"],
+    [[...DATASET_EXAMPLE.slice(0, 3), { initiativeId: "M12", districtId: "nura" }, DATASET_EXAMPLE[4]], "UNEXPECTED_DISTRICT"],
+    [[...DATASET_EXAMPLE.slice(0, 4), { initiativeId: "M9", districtId: "nura" }], "CATEGORY_LIMIT"],
+    [[...DATASET_EXAMPLE.slice(0, 4), { initiativeId: "M4", districtId: "nura" }], "INCOMPATIBLE_INITIATIVES"],
+  ];
+  for (const [selection, code] of cases) {
+    const response = await POST(request({ selection }));
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.deepEqual(Object.keys(body), ["error"]);
+    assert.equal(body.error.code, code);
+  }
+});
+
+test("101-unit scenario returns 422 with overspend and no scenario Score", async () => {
+  const selection = [{ initiativeId: "M2" }, { initiativeId: "M5", districtId: "saryarka" }, { initiativeId: "M7", districtId: "nura" }, { initiativeId: "M12" }, { initiativeId: "M14" }];
+  const response = await POST(request({ selection }));
+  assert.equal(response.status, 422);
+  const body = await response.json();
+  assert.deepEqual(Object.keys(body), ["error"]);
+  assert.equal(body.error.overspend, 1);
+});
+
+test("OpenAI receives computed target districts, lagged contributions, synergies and full precision", async () => {
+  let captured: Record<string, unknown> | undefined;
+  const explanation = { strengths: ["В Нуре усилены образование и первичная медицинская помощь."], risks: ["Инфраструктурным мерам потребуется время на реализацию."] };
+  await withMock(async () => {
+    const response = await POST(request({ selection: DATASET_EXAMPLE }));
+    const body = await response.json();
+    assert.equal(body.source, "openai");
+    assert.deepEqual(body.analysis.strengths, explanation.strengths);
+    assert.match(body.analysis.summary, /56,54/);
+    assert.ok(isAIAnalysis(body.analysis));
+    assert.ok(captured);
+    assert.equal(captured.store, false);
+    const input = captured.input as Array<{ content: string }>;
+    const scenario = JSON.parse(input[1].content);
+    assert.equal(scenario.scoreAfter, simulate(DATASET_EXAMPLE).projectedScore);
+    assert.equal(scenario.spent, 95);
+    const school = scenario.selectedInitiatives.find((m: { id: string }) => m.id === "M7");
+    assert.equal(school.decision.districtId, "nura");
+    assert.equal(school.realizedContribution.effects.S1, 10);
+    assert.equal(scenario.synergies[0].bonus, 2);
+  }, async (_url, init) => {
+    captured = JSON.parse(String(init?.body));
+    return modelResponse(explanation);
+  });
+});
+
+for (const [label, response] of [
+  ["missing fields", () => modelResponse({})],
+  ["invented numeric claim", () => modelResponse({ strengths: ["Score 99"], risks: ["Риск задержки."] })],
+  ["extra recommendation", () => modelResponse({ strengths: ["Польза."], risks: ["Риск."], recommendation: "Потратить всё" })],
+  ["empty list", () => modelResponse({ strengths: [], risks: ["Риск."] })],
+  ["truncated response", () => modelResponse({ strengths: ["Польза."], risks: ["Риск."] }, "incomplete")],
+  ["refusal", () => new Response(JSON.stringify({ id: "resp_test", object: "response", status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "refusal", refusal: "No" }] }] }), { headers: { "Content-Type": "application/json" } })],
+  ["HTTP error", () => new Response(JSON.stringify({ error: { message: "Unavailable" } }), { status: 500, headers: { "Content-Type": "application/json" } })],
+  ["network error", () => { throw new Error("Network unavailable"); }],
+] as const) test(`${label} falls back without changing the computed summary`, async () => {
+  await withMock(async () => {
+    const result = await POST(request({ selection: DATASET_EXAMPLE }));
+    assert.equal(result.status, 200);
+    const body = await result.json();
+    assert.equal(body.source, "fallback");
+    assert.equal(body.fallbackReason, "unavailable");
+    assert.match(body.analysis.summary, /56,54/);
+  }, async () => response());
 });
