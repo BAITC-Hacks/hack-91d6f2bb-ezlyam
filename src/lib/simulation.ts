@@ -13,6 +13,13 @@ import { averageMetric, calculateDistrictScore, clampMetric, scoreDistricts } fr
 
 export const STARTING_BUDGET = 1000;
 
+export interface ScenarioSuggestion {
+  selection: Selection;
+  changes: Array<{ category: Category; from: Initiative; to: Initiative }>;
+  spent: number;
+  projectedScore: number;
+}
+
 export class SimulationError extends Error {
   readonly code: "INCOMPLETE_SELECTION" | "UNKNOWN_INITIATIVE" | "OVER_BUDGET" | "NO_DISTRICTS";
   readonly overspend: number;
@@ -47,6 +54,23 @@ function getSelectedInitiatives(selection: Selection): Initiative[] {
     }
     return initiative;
   });
+}
+
+/** Returns the current spend even while the user has selected fewer than five categories. */
+export function calculateSelectionCost(selection: Partial<Selection>): number {
+  if (!selection || typeof selection !== "object" || Array.isArray(selection)) {
+    throw new SimulationError("INCOMPLETE_SELECTION", "Некорректный набор решений.");
+  }
+
+  return CATEGORIES.reduce((total, category) => {
+    const id = selection[category];
+    if (!id) return total;
+    const initiative = initiatives.find((item) => item.id === id && item.category === category);
+    if (!initiative) {
+      throw new SimulationError("UNKNOWN_INITIATIVE", `Некорректная инициатива для категории ${category}.`);
+    }
+    return total + initiative.cost;
+  }, 0);
 }
 
 function copyDistrict(district: District): District {
@@ -105,4 +129,79 @@ export function simulate(selection: Selection): SimulationResult {
     categoryDeltas,
     districtDeltas,
   };
+}
+
+function describeSuggestion(original: Selection, result: SimulationResult): ScenarioSuggestion {
+  const changes = CATEGORIES.flatMap((category) => {
+    if (original[category] === result.selection[category]) return [];
+    const from = initiatives.find((item) => item.id === original[category] && item.category === category);
+    const to = initiatives.find((item) => item.id === result.selection[category] && item.category === category);
+    return from && to ? [{ category, from, to }] : [];
+  });
+  return {
+    selection: result.selection,
+    changes,
+    spent: result.spent,
+    projectedScore: result.projectedScore,
+  };
+}
+
+/** Find the best affordable plan while changing as few of the user's choices as possible. */
+export function findAffordableAlternative(selection: Selection): ScenarioSuggestion | null {
+  getSelectedInitiatives(selection);
+  if (calculateSelectionCost(selection) <= STARTING_BUDGET) return null;
+
+  let best: ScenarioSuggestion | null = null;
+  const candidate = {} as Selection;
+
+  function search(index: number, cost: number, changes: number): void {
+    if (cost > STARTING_BUDGET || (best && changes > best.changes.length)) return;
+    if (index === CATEGORIES.length) {
+      const result = simulate(candidate);
+      const suggestion = describeSuggestion(selection, result);
+      if (
+        !best ||
+        suggestion.changes.length < best.changes.length ||
+        (suggestion.changes.length === best.changes.length && suggestion.projectedScore > best.projectedScore) ||
+        (suggestion.changes.length === best.changes.length && suggestion.projectedScore === best.projectedScore && suggestion.spent < best.spent)
+      ) {
+        best = suggestion;
+      }
+      return;
+    }
+
+    const category = CATEGORIES[index];
+    for (const item of initiatives.filter((entry) => entry.category === category)) {
+      candidate[category] = item.id;
+      search(index + 1, cost + item.cost, changes + Number(item.id !== selection[category]));
+    }
+  }
+
+  search(0, 0, 0);
+  return best;
+}
+
+/** Find a single affordable swap that produces the largest positive Score gain. */
+export function findScoreImprovement(selection: Selection): ScenarioSuggestion | null {
+  const current = simulate(selection);
+  let best: ScenarioSuggestion | null = null;
+
+  for (const category of CATEGORIES) {
+    for (const item of initiatives.filter((entry) => entry.category === category && entry.id !== selection[category])) {
+      const candidate = { ...selection, [category]: item.id };
+      if (calculateSelectionCost(candidate) > STARTING_BUDGET) continue;
+      const result = simulate(candidate);
+      if (result.projectedScore <= current.projectedScore) continue;
+      const suggestion = describeSuggestion(selection, result);
+      if (
+        !best ||
+        suggestion.projectedScore > best.projectedScore ||
+        (suggestion.projectedScore === best.projectedScore && suggestion.spent < best.spent)
+      ) {
+        best = suggestion;
+      }
+    }
+  }
+
+  return best;
 }
