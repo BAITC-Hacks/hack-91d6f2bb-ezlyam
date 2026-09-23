@@ -92,8 +92,8 @@ AI использует [Responses API со Structured Outputs](https://develope
 
 ## Команда
 
-- Участник 1: [имя и роль]
-- Участник 2: [имя и роль]
-- Участник 3: [имя и роль]
+- Участник 1: Danial Kalzhan
+- Участник 2: Eraly Karkinbayev
+- Участник 3: Aknur Galymzhankyzy
 
 Проект разрабатывался с помощью Codex.
