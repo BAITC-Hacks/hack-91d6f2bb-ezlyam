@@ -30,7 +30,8 @@ export interface Decision {
   districtId?: DistrictId;
 }
 
-export type Selection = Partial<Record<Category, Decision>>;
+/** Exactly five unique initiatives when complete; up to two per category. */
+export type Selection = Decision[];
 
 export interface ScoreBreakdown {
   districtScores: Record<DistrictId, number>;
@@ -43,7 +44,7 @@ export interface ScoreBreakdown {
 
 export interface ScenarioSuggestion {
   selection: Selection;
-  changes: Array<{ category: Category; from: Decision; to: Decision }>;
+  changes: Array<{ index: number; from: Decision; to: Decision }>;
   spent: number;
   projectedScore: number;
 }
@@ -62,6 +63,13 @@ export interface SimulationResult {
   metricDeltas: Metrics;
   categoryDeltas: Record<Category, number>;
   districtDeltas: Record<DistrictId, number>;
+  contributions: Array<{
+    initiativeId: string;
+    districtIds: DistrictId[];
+    factor: number;
+    effects: Partial<Metrics>;
+  }>;
+  synergies: Array<{ pair: [string, string]; districtId: DistrictId; metric: MetricCode; bonus: number }>;
 }
 
 export interface AIAnalysis {
@@ -75,4 +83,5 @@ export interface AIAnalysis {
 export interface AnalyzeResponse {
   analysis: AIAnalysis;
   source: "openai" | "fallback";
+  fallbackReason?: "missing_key" | "unavailable";
 }

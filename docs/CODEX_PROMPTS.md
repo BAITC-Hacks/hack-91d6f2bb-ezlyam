@@ -1,7 +1,9 @@
-# Rebuild context for Codex
+# Current development context
 
-Qala Balance AI is a Russian-language city management simulator for HackAlem AI. The user chooses exactly five measures, one in each direction, within a fixed 1,000 million ₸ display budget. The deterministic model uses five synthetic districts, ten indicators, and 14 measures from the supplied «Датасет районов.docx». The baseline Score is 52.56.
+Product: Qala Balance AI, HackAlem AI / Astana Innovations «Аким на 5 часов».
 
-The rebuild was organized as four sequential stages in one checkout: branch preparation, simulation core, interface, then AI analysis and documentation. Earlier three-agent prompts in Git history refer to the superseded 15-measure model and must not be reused. Read `README.md`, `AGENTS.md`, and the current TypeScript types before future work.
+The supplied dataset defines all numeric requirements. Read README.md and AGENTS.md. Historical prompts that demand one decision per category or convert units to tenge are superseded.
 
-OpenAI receives only the calculated scenario. The server always validates and recomputes through `simulate()`. The app must remain usable without a key. Keep future changes in `feature/rebuild` until the team reviews a final PR to `main`.
+Maintain five unique decisions, at most two per category, budget <=100, exact catalog M1–M14, district/city scope, three synergies and incompatibilities. Invalid selections receive no Score. Numeric results come from deterministic code, not the LLM.
+
+The reproducibility gate is pnpm test, pnpm typecheck, pnpm lint, pnpm check:example, pnpm build and the README demonstration. The expected official example is cost 95 and Score 56.54307. Mock API tests do not replace a real OpenAI connectivity check.
