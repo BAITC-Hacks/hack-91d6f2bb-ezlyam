@@ -4,7 +4,14 @@ import { districts } from "../data/districts";
 import { initiatives } from "../data/initiatives";
 import { CATEGORIES, type District, type Selection } from "../types/simulation";
 import { clampMetric, scoreDistricts } from "./scoring";
-import { simulate, SimulationError, STARTING_BUDGET } from "./simulation";
+import {
+  calculateSelectionCost,
+  findAffordableAlternative,
+  findScoreImprovement,
+  simulate,
+  SimulationError,
+  STARTING_BUDGET,
+} from "./simulation";
 
 const affordable: Selection = {
   transport: "bike-network",
@@ -77,4 +84,37 @@ test("large disparity carries a transparent inequality penalty", () => {
     id: "low", name: "Низкий", metrics: { transport: 0, greenery: 0, social: 0, safety: 0, services: 0 },
   };
   assert.equal(scoreDistricts([high, low]), 42);
+});
+
+test("partial selection cost supports a live budget panel", () => {
+  assert.equal(calculateSelectionCost({}), 0);
+  assert.equal(calculateSelectionCost({ transport: "bike-network", safety: "street-lighting" }), 250);
+  assert.throws(() => calculateSelectionCost({ transport: "new-schools" }), (error: unknown) =>
+    error instanceof SimulationError && error.code === "UNKNOWN_INITIATIVE");
+});
+
+test("an over-budget plan gets the fewest necessary affordable swaps", () => {
+  const expensive: Selection = {
+    transport: "rapid-transit",
+    greenery: "green-river",
+    social: "new-schools",
+    safety: "dispatch-safety",
+    services: "smart-maintenance",
+  };
+  const suggestion = findAffordableAlternative(expensive);
+  assert.ok(suggestion);
+  assert.equal(suggestion.changes.length, 3);
+  assert.ok(suggestion.spent <= STARTING_BUDGET);
+  assert.equal(suggestion.spent, simulate(suggestion.selection).spent);
+  assert.equal(findAffordableAlternative(affordable), null);
+});
+
+test("an affordable improvement always increases Score without overspending", () => {
+  const current = simulate(affordable);
+  const suggestion = findScoreImprovement(affordable);
+  assert.ok(suggestion);
+  assert.equal(suggestion.changes.length, 1);
+  assert.ok(suggestion.spent <= STARTING_BUDGET);
+  assert.ok(suggestion.projectedScore > current.projectedScore);
+  assert.equal(suggestion.projectedScore, simulate(suggestion.selection).projectedScore);
 });
