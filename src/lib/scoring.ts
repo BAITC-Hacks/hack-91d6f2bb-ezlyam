@@ -9,7 +9,7 @@ const roundTwo = (value: number): number => Math.round((value + Number.EPSILON) 
 const roundOne = (value: number): number => Math.round((value + Number.EPSILON) * 10) / 10;
 
 export function calculateDistrictScore(district: District): number {
-  return roundTwo(METRIC_CODES.reduce((sum, code) => sum + clampMetric(district.metrics[code]) * SCORE_WEIGHTS[code], 0));
+  return METRIC_CODES.reduce((sum, code) => sum + clampMetric(district.metrics[code]) * SCORE_WEIGHTS[code], 0);
 }
 
 export function countCriticalValues(districtsToScore: readonly District[]): number {
@@ -19,11 +19,18 @@ export function countCriticalValues(districtsToScore: readonly District[]): numb
 export function scoreBreakdown(districtsToScore: readonly District[]): ScoreBreakdown {
   if (districtsToScore.length === 0) return { districtScores: {} as Record<DistrictId, number>, populationWeightedAverage: 0, weakestDistrictScore: 0, criticalCount: 0, inequalityPenalty: 0, score: 0 };
   const districtScores = Object.fromEntries(districtsToScore.map((district) => [district.id, calculateDistrictScore(district)])) as Record<DistrictId, number>;
-  const populationWeightedAverage = roundTwo(districtsToScore.reduce((sum, district) => sum + district.populationShare * districtScores[district.id], 0));
-  const weakestDistrictScore = roundTwo(Math.min(...districtsToScore.map((district) => districtScores[district.id])));
+  const populationWeightedAverage = districtsToScore.reduce((sum, district) => sum + district.populationShare * districtScores[district.id], 0);
+  const weakestDistrictScore = Math.min(...districtsToScore.map((district) => districtScores[district.id]));
   const criticalCount = countCriticalValues(districtsToScore);
   const score = roundTwo(0.7 * populationWeightedAverage + 0.3 * weakestDistrictScore - criticalCount);
-  return { districtScores, populationWeightedAverage, weakestDistrictScore, criticalCount, inequalityPenalty: criticalCount, score };
+  return {
+    districtScores: Object.fromEntries(Object.entries(districtScores).map(([id, value]) => [id, roundTwo(value)])) as Record<DistrictId, number>,
+    populationWeightedAverage: roundTwo(populationWeightedAverage),
+    weakestDistrictScore: roundTwo(weakestDistrictScore),
+    criticalCount,
+    inequalityPenalty: criticalCount,
+    score,
+  };
 }
 
 export function scoreDistricts(districtsToScore: readonly District[]): number {

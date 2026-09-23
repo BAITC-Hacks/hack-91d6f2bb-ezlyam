@@ -7,18 +7,22 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "lint": "next lint",
-    "test": "tsx --test src/lib/simulation.test.ts"
+    "lint": "eslint src",
+    "test": "tsx --test src/lib/simulation.test.ts src/app/api/analyze/route.test.ts"
   },
   "dependencies": {
-    "next": "14.2.21",
+    "next": "15.5.26",
+    "openai": "^6.0.0",
     "react": "18.3.1",
     "react-dom": "18.3.1"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3.0.0",
     "@types/node": "22.10.2",
     "@types/react": "18.3.12",
     "@types/react-dom": "18.3.1",
+    "eslint": "^9.0.0",
+    "eslint-config-next": "15.5.26",
     "tsx": "4.19.2",
     "typescript": "5.7.2"
   }

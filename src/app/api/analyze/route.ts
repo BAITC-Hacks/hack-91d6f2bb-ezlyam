@@ -30,12 +30,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isSelection(value: unknown): value is Selection {
   if (!isRecord(value) || Object.keys(value).length !== CATEGORIES.length) return false;
-  return CATEGORIES.every(
-    (category) =>
-      Object.prototype.hasOwnProperty.call(value, category) &&
-      typeof value[category] === "string" &&
-      (value[category] as string).trim().length > 0,
-  );
+  return CATEGORIES.every((category) => {
+    const decision = value[category];
+    return isRecord(decision) && typeof decision.initiativeId === "string" &&
+      decision.initiativeId.trim().length > 0 &&
+      (decision.districtId === undefined || typeof decision.districtId === "string") &&
+      Object.keys(decision).every((key) => key === "initiativeId" || key === "districtId");
+  });
 }
 
 function buildScenarioPayload(
@@ -43,12 +44,15 @@ function buildScenarioPayload(
   improvement: ReturnType<typeof findScoreImprovement>,
 ) {
   return {
-    budget: STARTING_BUDGET,
-    spent: result.spent,
-    remaining: result.remaining,
+    moneyUnit: "million KZT",
+    budgetMillionTenge: STARTING_BUDGET * 10,
+    spentMillionTenge: result.spent * 10,
+    remainingMillionTenge: result.remaining * 10,
     scoreBefore: result.baselineScore,
     scoreAfter: result.projectedScore,
-    scoreChange: Number((result.projectedScore - result.baselineScore).toFixed(1)),
+    scoreChange: Number((result.projectedScore - result.baselineScore).toFixed(2)),
+    criticalBefore: result.baselineBreakdown.criticalCount,
+    criticalAfter: result.projectedBreakdown.criticalCount,
     categoryChanges: result.categoryDeltas,
     districts: result.projectedDistricts.map((district, index) => ({
       id: district.id,
@@ -58,9 +62,11 @@ function buildScenarioPayload(
       scoreChange: result.districtDeltas[district.id] ?? 0,
     })),
     selectedInitiatives: result.selectedInitiatives.map((initiative) => ({
+      id: initiative.id,
       title: initiative.title,
       category: initiative.category,
-      cost: initiative.cost,
+      costMillionTenge: initiative.cost * 10,
+      lag: initiative.lag,
       effects: initiative.effects,
       risk: initiative.risk,
     })),
@@ -68,10 +74,10 @@ function buildScenarioPayload(
       ? {
           changes: improvement.changes.map(({ category, from, to }) => ({
             category,
-            from: from.title,
-            to: to.title,
+            from,
+            to,
           })),
-          spent: improvement.spent,
+          spentMillionTenge: improvement.spent * 10,
           projectedScore: improvement.projectedScore,
         }
       : null,
@@ -136,7 +142,7 @@ export async function POST(request: Request) {
       {
         error: {
           code: "INVALID_SELECTION",
-          message: "Передайте selection с одной инициативой в каждой из пяти категорий.",
+          message: "Передайте selection с пятью решениями: initiativeId и, для районных мер, districtId.",
         },
       },
       { status: 400 },
@@ -164,8 +170,8 @@ export async function POST(request: Request) {
                   selection: alternative.selection,
                   changes: alternative.changes.map(({ category, from, to }) => ({
                     category,
-                    from: from.title,
-                    to: to.title,
+                    from,
+                    to,
                   })),
                   spent: alternative.spent,
                   remaining: STARTING_BUDGET - alternative.spent,

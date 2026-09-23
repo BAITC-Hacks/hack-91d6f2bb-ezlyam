@@ -4,7 +4,7 @@ import { districts } from "../data/districts";
 import { initiatives } from "../data/initiatives";
 import { CATEGORIES, type District, type Selection } from "../types/simulation";
 import { clampMetric, countCriticalValues, scoreDistricts } from "./scoring";
-import { calculateSelectionCost, findScoreImprovement, simulate, SimulationError, STARTING_BUDGET } from "./simulation";
+import { calculateSelectionCost, findAffordableAlternative, findScoreImprovement, simulate, SimulationError, STARTING_BUDGET } from "./simulation";
 
 const valid: Selection = { transport: { initiativeId: "M1", districtId: "nura" }, ecology: { initiativeId: "M5", districtId: "saryarka" }, social: { initiativeId: "M7", districtId: "nura" }, safety: { initiativeId: "M10", districtId: "nura" }, services: { initiativeId: "M12" } };
 
@@ -21,16 +21,29 @@ test("a valid five-decision scenario applies lagged effects and stays in budget"
   assert.equal(result.spent, 93);
   assert.equal(result.remaining, STARTING_BUDGET - 93);
   assert.notEqual(result.projectedScore, result.baselineScore);
+  assert.equal(result.projectedDistricts.find((district) => district.id === "nura")?.metrics.S1, 48);
+  assert.equal(result.projectedDistricts.find((district) => district.id === "nura")?.metrics.B1, 67.5);
 });
 
 test("district initiatives require a district", () => {
   assert.throws(() => simulate({ ...valid, transport: { initiativeId: "M1" } }), (error: unknown) => error instanceof SimulationError && error.code === "MISSING_DISTRICT");
+  assert.throws(() => simulate({ ...valid, services: { initiativeId: "M12", districtId: "nura" } }), (error: unknown) => error instanceof SimulationError && error.code === "UNEXPECTED_DISTRICT");
 });
 
 test("incomplete and incompatible selections are rejected", () => {
   assert.throws(() => simulate({ ...valid, social: undefined }), (error: unknown) => error instanceof SimulationError && error.code === "INCOMPLETE_SELECTION");
-  assert.throws(() => simulate({ ...valid, transport: { initiativeId: "M3", districtId: "nura" } }), (error: unknown) => error instanceof SimulationError && error.code === "INCOMPATIBLE_INITIATIVES");
   assert.throws(() => simulate({ ...valid, ecology: { initiativeId: "M4", districtId: "nura" }, social: { initiativeId: "M7", districtId: "nura" } }), (error: unknown) => error instanceof SimulationError && error.code === "INCOMPATIBLE_INITIATIVES");
+  assert.throws(() => simulate({ ...valid, services: { initiativeId: "M13", districtId: "saryarka" } }), (error: unknown) => error instanceof SimulationError && error.code === "INCOMPATIBLE_INITIATIVES");
+});
+
+test("over-budget scenarios are rejected and receive an affordable replacement", () => {
+  const expensive: Selection = { ...valid, transport: { initiativeId: "M3", districtId: "nura" }, services: { initiativeId: "M13", districtId: "almaty" } };
+  assert.throws(() => simulate(expensive), (error: unknown) => error instanceof SimulationError && error.code === "OVER_BUDGET" && error.overspend === 19);
+  const suggestion = findAffordableAlternative(expensive);
+  assert.ok(suggestion);
+  assert.equal(suggestion.changes.length, 2);
+  assert.ok(suggestion.spent <= STARTING_BUDGET);
+  assert.equal(simulate(suggestion.selection).spent, suggestion.spent);
 });
 
 test("the score formula counts critical values and clamps metrics", () => {

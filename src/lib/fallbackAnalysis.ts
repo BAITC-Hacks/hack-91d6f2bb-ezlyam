@@ -1,211 +1,67 @@
-import { CATEGORIES, type AIAnalysis, type Category, type SimulationResult } from "../types/simulation";
-import { calculateDistrictScore } from "./scoring";
-import { findScoreImprovement, type ScenarioSuggestion } from "./simulation";
+import { initiatives } from "../data/initiatives";
+import { CATEGORIES, type AIAnalysis, type Category, type ScenarioSuggestion, type SimulationResult } from "../types/simulation";
 
-const CATEGORY_NAMES: Record<Category, string> = {
-  transport: "транспорт",
-  greenery: "озеленение",
-  social: "социальная инфраструктура",
-  safety: "безопасность",
-  services: "городские сервисы",
+const names: Record<Category, string> = {
+  transport: "транспорт", ecology: "экология", social: "социальная сфера",
+  safety: "безопасность", services: "городские сервисы",
 };
+const number = (value: number) => new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(value);
+const money = (units: number) => `${number(units * 10)} млн ₸`;
 
-const formatNumber = (value: number): string =>
-  new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 }).format(value);
-
-const formatSigned = (value: number): string =>
-  value > 0 ? "+" + formatNumber(value) : formatNumber(value);
-
-function makeRecommendation(suggestion: ScenarioSuggestion | null, currentScore: number): string {
-  if (!suggestion || suggestion.changes.length === 0) {
-    return "Сценарий уже укладывается в бюджет. Проверка одиночных замен не нашла вариант с более высоким Score; сравните новый сценарий, изменив несколько решений.";
-  }
-
-  const changes = suggestion.changes
-    .map(
-      ({ category, from, to }) =>
-        "в категории «" +
-        CATEGORY_NAMES[category] +
-        "» заменить «" +
-        from.title +
-        "» на «" +
-        to.title +
-        "»",
-    )
-    .join("; ");
-  const gain = suggestion.projectedScore - currentScore;
-
-  return (
-    "В пределах бюджета попробуйте " +
-    changes +
-    ". Расчётная стоимость — " +
-    formatNumber(suggestion.spent) +
-    " млн ₸, Score изменится с " +
-    formatNumber(currentScore) +
-    " до " +
-    formatNumber(suggestion.projectedScore) +
-    " (" +
-    formatSigned(gain) +
-    ")."
-  );
+function recommendation(suggestion: ScenarioSuggestion | null): string {
+  if (!suggestion) return "Одиночной замены, которая повышает Score и сохраняет бюджет, не найдено. Сравните другой набор решений.";
+  const change = suggestion.changes[0];
+  const from = initiatives.find((item) => item.id === change.from.initiativeId)!;
+  const to = initiatives.find((item) => item.id === change.to.initiativeId)!;
+  const district = change.to.districtId ? ` в районе ${change.to.districtId}` : " для всего города";
+  return `В направлении «${names[change.category]}» замените «${from.title}» на «${to.title}»${district}. Расход ${money(suggestion.spent)}, расчётный Score ${number(suggestion.projectedScore)}.`;
 }
 
-/** Build a deterministic Russian explanation from the simulation output only. */
-export function buildFallbackAnalysis(
-  result: SimulationResult,
-  improvement: ScenarioSuggestion | null = findScoreImprovement(result.selection),
-): AIAnalysis {
+/** Объяснение составляется только из результатов детерминированного расчёта. */
+export function buildFallbackAnalysis(result: SimulationResult, improvement: ScenarioSuggestion | null): AIAnalysis {
   const scoreChange = result.projectedScore - result.baselineScore;
-  const scoreTrend =
-    scoreChange > 0
-      ? "вырос на " + formatNumber(scoreChange)
-      : scoreChange < 0
-        ? "снизился на " + formatNumber(Math.abs(scoreChange))
-        : "не изменился";
-
-  const sortedCategories = CATEGORIES.map((category) => ({
-    category,
-    delta: result.categoryDeltas[category],
-  })).sort((left, right) => right.delta - left.delta);
-  const strongestCategory = sortedCategories[0];
-  const weakestDistrict = result.projectedDistricts
-    .map((district) => ({ district, score: calculateDistrictScore(district) }))
-    .sort((left, right) => left.score - right.score)[0];
-  const bestDistrict = result.projectedDistricts
-    .map((district) => ({ district, delta: result.districtDeltas[district.id] ?? 0 }))
-    .sort((left, right) => right.delta - left.delta)[0];
-  const negativeCategories = sortedCategories.filter((item) => item.delta < 0);
-  const initiativeRisks = result.selectedInitiatives.map((initiative) => initiative.risk.trim()).filter(Boolean);
-
-  const strengths = [
-    "Score по синтетической модели " +
-      scoreTrend +
-      ": " +
-      formatNumber(result.baselineScore) +
-      " → " +
-      formatNumber(result.projectedScore) +
-      ".",
-  ];
-
-  if (strongestCategory && strongestCategory.delta > 0) {
-    strengths.push(
-      "Наибольший средний прирост — в направлении «" +
-        CATEGORY_NAMES[strongestCategory.category] +
-        "»: " +
-        formatSigned(strongestCategory.delta) +
-        " пункта.",
-    );
-  }
-
-  if (bestDistrict && bestDistrict.delta > 0) {
-    strengths.push(
-      "Больше всего вырос расчётный балл района «" +
-        bestDistrict.district.name +
-        "»: " +
-        formatSigned(bestDistrict.delta) +
-        ".",
-    );
-  } else {
-    strengths.push("Расчёт учитывает последствия выбранных мер для всех пяти районов.");
-  }
-
-  const risks = initiativeRisks.slice(0, 3);
-  if (negativeCategories.length > 0) {
-    risks.push(
-      "Показатель направления «" +
-        CATEGORY_NAMES[negativeCategories[0].category] +
-        "» изменился на " +
-        formatSigned(negativeCategories[0].delta) +
-        " пункта в среднем.",
-    );
-  }
-  if (risks.length === 0) {
-    risks.push("В каталоге для выбранных мер не указаны отдельные риски.");
-  }
-
-  const tradeoffs = [
-    "Использовано " +
-      formatNumber(result.spent) +
-      " из " +
-      formatNumber(result.spent + result.remaining) +
-      " млн ₸; осталось " +
-      formatNumber(result.remaining) +
-      " млн ₸.",
-    negativeCategories.length > 0
-      ? "Есть снижение в направлениях: " +
-          negativeCategories
-            .map((item) => CATEGORY_NAMES[item.category] + " (" + formatSigned(item.delta) + ")")
-            .join(", ") +
-          "."
-      : "Средние показатели категорий не снизились.",
-  ];
-
-  if (weakestDistrict) {
-    tradeoffs.push(
-      "После сценария самым слабым по взвешенным показателям остаётся район «" +
-        weakestDistrict.district.name +
-        "» (" +
-        formatNumber(weakestDistrict.score) +
-        " из 100).",
-    );
-  }
-
-  const beforeScores = result.baselineDistricts.map(calculateDistrictScore);
-  const afterScores = result.projectedDistricts.map(calculateDistrictScore);
-  if (beforeScores.length > 0 && afterScores.length > 0) {
-    const beforeGap = Math.max(...beforeScores) - Math.min(...beforeScores);
-    const afterGap = Math.max(...afterScores) - Math.min(...afterScores);
-    tradeoffs.push(
-      "Разрыв между самым сильным и слабым районом изменился с " +
-        formatNumber(beforeGap) +
-        " до " +
-        formatNumber(afterGap) +
-        " пункта.",
-    );
-  }
+  const sorted = CATEGORIES.map((category) => ({ category, delta: result.categoryDeltas[category] }))
+    .sort((a, b) => b.delta - a.delta);
+  const strongest = sorted[0];
+  const bestDistrict = result.projectedDistricts.reduce((current, district) =>
+    result.districtDeltas[district.id] > result.districtDeltas[current.id] ? district : current);
+  const weakest = result.projectedDistricts.reduce((current, district) =>
+    result.projectedBreakdown.districtScores[district.id] < result.projectedBreakdown.districtScores[current.id]
+      ? district : current);
+  const risks = result.selectedInitiatives.map((initiative) => `${initiative.id}: ${initiative.risk}`);
+  const negative = sorted.filter((entry) => entry.delta < 0);
 
   return {
-    summary:
-      "Выбрано пять инициатив на " +
-      formatNumber(result.spent) +
-      " млн ₸. Score изменился с " +
-      formatNumber(result.baselineScore) +
-      " до " +
-      formatNumber(result.projectedScore) +
-      "; бюджет не превышен. Это результат на синтетических данных, а не прогноз для Астаны.",
-    strengths,
-    risks,
-    tradeoffs,
-    recommendation: makeRecommendation(improvement, result.projectedScore),
+    summary: `За 8 кварталов сценарий расходует ${money(result.spent)} из ${money(result.spent + result.remaining)}. Astana Quality of Life Score меняется с ${number(result.baselineScore)} до ${number(result.projectedScore)} (${scoreChange >= 0 ? "+" : ""}${number(scoreChange)}). Это синтетическая модель, а не прогноз для Астаны.`,
+    strengths: [
+      strongest.delta > 0
+        ? `Наибольший средний прирост — «${names[strongest.category]}»: +${number(strongest.delta)} пункта.`
+        : "Средние показатели направлений не выросли.",
+      result.districtDeltas[bestDistrict.id] > 0
+        ? `Наибольший прирост районного балла — ${bestDistrict.name}: +${number(result.districtDeltas[bestDistrict.id])}.`
+        : "Баллы районов не выросли; стоит пересмотреть распределение мер.",
+    ],
+    risks: risks.length ? risks.slice(0, 3) : ["Риски выбранных мероприятий не указаны."],
+    tradeoffs: [
+      `Остаток бюджета: ${money(result.remaining)}; неиспользованные средства не увеличивают Score.`,
+      `К концу сценария самый слабый район — ${weakest.name}: ${number(result.projectedBreakdown.weakestDistrictScore)} балла.`,
+      `Критических показателей ниже 40: ${result.projectedBreakdown.criticalCount}; штраф в формуле Score: ${number(result.projectedBreakdown.inequalityPenalty)}.`,
+      negative.length
+        ? `Снижение среднего показателя: ${negative.map((item) => `${names[item.category]} ${number(item.delta)}`).join(", ")}.`
+        : "Средние показатели всех направлений не снизились.",
+    ],
+    recommendation: recommendation(improvement),
   };
 }
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0 && value.length <= 600;
-}
+const validText = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0 && value.length <= 600;
+const validList = (value: unknown): value is string[] => Array.isArray(value) && value.length >= 1 && value.length <= 5 && value.every(validText);
 
-function isStringList(value: unknown): value is string[] {
-  return (
-    Array.isArray(value) &&
-    value.length >= 1 &&
-    value.length <= 5 &&
-    value.every((item) => isNonEmptyString(item))
-  );
-}
-
-/** Validate model output at runtime before returning it to the browser. */
 export function isAIAnalysis(value: unknown): value is AIAnalysis {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
-  const keys = ["summary", "strengths", "risks", "tradeoffs", "recommendation"];
-  return (
-    Object.keys(record).length === keys.length &&
-    keys.every((key) => Object.prototype.hasOwnProperty.call(record, key)) &&
-    isNonEmptyString(record.summary) &&
-    isStringList(record.strengths) &&
-    isStringList(record.risks) &&
-    isStringList(record.tradeoffs) &&
-    isNonEmptyString(record.recommendation)
-  );
+  const fields = ["summary", "strengths", "risks", "tradeoffs", "recommendation"];
+  return Object.keys(record).length === fields.length && fields.every((field) => field in record) &&
+    validText(record.summary) && validList(record.strengths) && validList(record.risks) &&
+    validList(record.tradeoffs) && validText(record.recommendation);
 }

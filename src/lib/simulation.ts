@@ -5,7 +5,7 @@ import { CATEGORIES, type Category, type Decision, type District, type DistrictI
 
 export const STARTING_BUDGET = 100;
 export const HORIZON_QUARTERS = 8;
-type ErrorCode = "INCOMPLETE_SELECTION" | "UNKNOWN_INITIATIVE" | "MISSING_DISTRICT" | "UNKNOWN_DISTRICT" | "OVER_BUDGET" | "INCOMPATIBLE_INITIATIVES" | "NO_DISTRICTS";
+type ErrorCode = "INCOMPLETE_SELECTION" | "UNKNOWN_INITIATIVE" | "MISSING_DISTRICT" | "UNEXPECTED_DISTRICT" | "UNKNOWN_DISTRICT" | "OVER_BUDGET" | "INCOMPATIBLE_INITIATIVES" | "NO_DISTRICTS";
 
 export class SimulationError extends Error {
   readonly code: ErrorCode;
@@ -15,16 +15,20 @@ export class SimulationError extends Error {
 
 const copyDistrict = (district: District): District => ({ ...district, metrics: { ...district.metrics } });
 const initiativeFor = (decision: Decision | undefined, category: Category): Initiative => {
-  if (!decision || typeof decision.initiativeId !== "string" || !decision.initiativeId) throw new SimulationError("INCOMPLETE_SELECTION", "Выберите по одной инициативе в каждой из пяти категорий.");
+  if (!decision || typeof decision !== "object" || Array.isArray(decision) || typeof decision.initiativeId !== "string" || !decision.initiativeId) throw new SimulationError("INCOMPLETE_SELECTION", "Выберите по одной инициативе в каждом из пяти направлений.");
+  if (Object.keys(decision).some((key) => key !== "initiativeId" && key !== "districtId")) throw new SimulationError("INCOMPLETE_SELECTION", "У решения есть неизвестные поля.");
   const initiative = initiatives.find((item) => item.id === decision.initiativeId && item.category === category);
   if (!initiative) throw new SimulationError("UNKNOWN_INITIATIVE", `Некорректная инициатива для направления ${category}.`);
+  if (decision.districtId !== undefined && typeof decision.districtId !== "string") throw new SimulationError("UNKNOWN_DISTRICT", "Некорректный район.");
   if (initiative.type === "district" && !decision.districtId) throw new SimulationError("MISSING_DISTRICT", `Для ${initiative.id} нужно выбрать район.`);
+  if (initiative.type === "city" && decision.districtId !== undefined) throw new SimulationError("UNEXPECTED_DISTRICT", `Для городского мероприятия ${initiative.id} район не выбирается.`);
   if (decision.districtId && !districts.some((district) => district.id === decision.districtId)) throw new SimulationError("UNKNOWN_DISTRICT", `Неизвестный район: ${decision.districtId}.`);
   return initiative;
 };
 
 export function getSelectedInitiatives(selection: Selection): Initiative[] {
   if (!selection || typeof selection !== "object" || Array.isArray(selection)) throw new SimulationError("INCOMPLETE_SELECTION", "Некорректный набор решений.");
+  if (Object.keys(selection).length !== CATEGORIES.length || Object.keys(selection).some((key) => !CATEGORIES.includes(key as Category))) throw new SimulationError("INCOMPLETE_SELECTION", "Нужно выбрать ровно пять решений, по одному в каждом направлении.");
   const selected = CATEGORIES.map((category) => initiativeFor(selection[category], category));
   if (new Set(selected.map((initiative) => initiative.id)).size !== selected.length) throw new SimulationError("INCOMPLETE_SELECTION", "Одно мероприятие нельзя выбрать повторно.");
   const pairs: Array<[string, string]> = [["M1", "M3"], ["M4", "M7"], ["M5", "M13"]];
@@ -34,14 +38,20 @@ export function getSelectedInitiatives(selection: Selection): Initiative[] {
     if (!a || !b) continue;
     const aDistrict = selection[a.category]?.districtId;
     const bDistrict = selection[b.category]?.districtId;
-    if (first === "M1" || first === "M3" || aDistrict === bDistrict) throw new SimulationError("INCOMPATIBLE_INITIATIVES", `${first} и ${second} несовместимы.`);
+    if (first === "M1" || aDistrict === bDistrict) throw new SimulationError("INCOMPATIBLE_INITIATIVES", `${first} и ${second} несовместимы.`);
   }
   return selected;
 }
 
 export function calculateSelectionCost(selection: Selection): number {
-  if (!selection || typeof selection !== "object") throw new SimulationError("INCOMPLETE_SELECTION", "Некорректный набор решений.");
-  return CATEGORIES.reduce((total, category) => total + (selection[category] ? initiativeFor(selection[category], category).cost : 0), 0);
+  if (!selection || typeof selection !== "object" || Array.isArray(selection) || Object.keys(selection).some((key) => !CATEGORIES.includes(key as Category))) throw new SimulationError("INCOMPLETE_SELECTION", "Некорректный набор решений.");
+  return CATEGORIES.reduce((total, category) => {
+    const decision = selection[category];
+    if (!decision) return total;
+    const initiative = initiatives.find((item) => item.id === decision.initiativeId && item.category === category);
+    if (!initiative) throw new SimulationError("UNKNOWN_INITIATIVE", `Некорректная инициатива для направления ${category}.`);
+    return total + initiative.cost;
+  }, 0);
 }
 
 const targetDistricts = (initiative: Initiative, decision: Decision): District[] => initiative.type === "city" ? districts : districts.filter((district) => district.id === decision.districtId);
@@ -92,8 +102,59 @@ export function findScoreImprovement(selection: Selection): ScenarioSuggestion |
   for (const category of CATEGORIES) for (const initiative of initiatives.filter((item) => item.category === category && item.id !== selection[category]?.initiativeId)) {
     for (const districtId of initiative.type === "district" ? districts.map((district) => district.id) : [undefined]) {
       const candidate: Selection = { ...selection, [category]: { initiativeId: initiative.id, ...(districtId ? { districtId } : {}) } };
-      try { const result = simulate(candidate); if (result.projectedScore > current.projectedScore && (!best || result.projectedScore > best.projectedScore)) best = { selection: candidate, changes: [{ category, from: selection[category]!, to: candidate[category]! }], spent: result.spent, projectedScore: result.projectedScore }; } catch { /* invalid candidate */ }
+      try { const result = simulate(candidate); if (result.projectedScore > current.projectedScore && (!best || result.projectedScore > best.projectedScore)) best = { selection: candidate, changes: [{ category, from: selection[category]!, to: candidate[category]! }], spent: result.spent, projectedScore: result.projectedScore }; }
+      catch (error) { if (!(error instanceof SimulationError)) throw error; }
     }
   }
+  return best;
+}
+
+/** Ищет допустимый план, меняя минимальное число решений. */
+export function findAffordableAlternative(selection: Selection): ScenarioSuggestion | null {
+  getSelectedInitiatives(selection);
+  if (calculateSelectionCost(selection) <= STARTING_BUDGET) return null;
+
+  const options = CATEGORIES.map((category) => {
+    const original = selection[category]!;
+    const alternatives: Decision[] = initiatives
+      .filter((initiative) => initiative.category === category)
+      .flatMap((initiative) => initiative.type === "city"
+        ? [{ initiativeId: initiative.id }]
+        : districts.map((district) => ({ initiativeId: initiative.id, districtId: district.id })));
+    return [original, ...alternatives.filter((decision) =>
+      decision.initiativeId !== original.initiativeId || decision.districtId !== original.districtId)];
+  });
+
+  let best: ScenarioSuggestion | null = null;
+  const candidate: Selection = {};
+  function search(index: number, spent: number, changeCount: number): void {
+    if (spent > STARTING_BUDGET || (best && changeCount > best.changes.length)) return;
+    if (index === CATEGORIES.length) {
+      try {
+        const result = simulate(candidate);
+        const changes = CATEGORIES.flatMap((category) => {
+          const from = selection[category]!;
+          const to = candidate[category]!;
+          return from.initiativeId === to.initiativeId && from.districtId === to.districtId ? [] : [{ category, from, to }];
+        });
+        if (!best || changes.length < best.changes.length ||
+          (changes.length === best.changes.length && result.projectedScore > best.projectedScore)) {
+          best = { selection: structuredClone(candidate), changes, spent: result.spent, projectedScore: result.projectedScore };
+        }
+      } catch (error) {
+        if (!(error instanceof SimulationError)) throw error;
+      }
+      return;
+    }
+    const category = CATEGORIES[index];
+    for (const decision of options[index]) {
+      const initiative = initiatives.find((item) => item.id === decision.initiativeId)!;
+      candidate[category] = decision;
+      const original = selection[category]!;
+      const changed = decision.initiativeId !== original.initiativeId || decision.districtId !== original.districtId;
+      search(index + 1, spent + initiative.cost, changeCount + Number(changed));
+    }
+  }
+  search(0, 0, 0);
   return best;
 }
