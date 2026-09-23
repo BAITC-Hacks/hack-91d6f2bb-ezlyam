@@ -1,19 +1,15 @@
-/** Shared contract for the three implementation lanes. Monetary values are million ₸. */
-export const CATEGORIES = [
-  "transport",
-  "greenery",
-  "social",
-  "safety",
-  "services",
-] as const;
+export const CATEGORIES = ["transport", "ecology", "social", "safety", "services"] as const;
 
 export type Category = (typeof CATEGORIES)[number];
-export type Metrics = Record<Category, number>;
-export type Selection = Record<Category, string>;
+export type MetricCode = "T1" | "T2" | "E1" | "E2" | "S1" | "S2" | "B1" | "B2" | "C1" | "C2";
+export type Metrics = Record<MetricCode, number>;
+export type DistrictId = "esil" | "almaty" | "saryarka" | "baikonyr" | "nura";
+export type InitiativeType = "district" | "city";
 
 export interface District {
-  id: string;
+  id: DistrictId;
   name: string;
+  populationShare: number;
   metrics: Metrics;
 }
 
@@ -22,10 +18,34 @@ export interface Initiative {
   title: string;
   description: string;
   category: Category;
+  type: InitiativeType;
   cost: number;
-  targetDistrictIds: string[];
-  effects: Partial<Metrics>;
+  lag: number;
+  effects: Partial<Record<MetricCode, number>>;
   risk: string;
+}
+
+export interface Decision {
+  initiativeId: string;
+  districtId?: DistrictId;
+}
+
+export type Selection = Partial<Record<Category, Decision>>;
+
+export interface ScoreBreakdown {
+  districtScores: Record<DistrictId, number>;
+  populationWeightedAverage: number;
+  weakestDistrictScore: number;
+  criticalCount: number;
+  inequalityPenalty: number;
+  score: number;
+}
+
+export interface ScenarioSuggestion {
+  selection: Selection;
+  changes: Array<{ category: Category; from: Decision; to: Decision }>;
+  spent: number;
+  projectedScore: number;
 }
 
 export interface SimulationResult {
@@ -35,12 +55,13 @@ export interface SimulationResult {
   projectedDistricts: District[];
   baselineScore: number;
   projectedScore: number;
+  baselineBreakdown: ScoreBreakdown;
+  projectedBreakdown: ScoreBreakdown;
   spent: number;
   remaining: number;
-  /** Change in the mean district metric for each category. */
-  categoryDeltas: Metrics;
-  /** Change in each district's weighted metric score, keyed by district ID. */
-  districtDeltas: Record<string, number>;
+  metricDeltas: Metrics;
+  categoryDeltas: Record<Category, number>;
+  districtDeltas: Record<DistrictId, number>;
 }
 
 export interface AIAnalysis {
