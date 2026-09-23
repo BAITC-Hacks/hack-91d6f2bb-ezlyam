@@ -173,7 +173,7 @@ scripts/check-example.ts      воспроизводимый контрольн�
 ## Команда
 
 - Участник 1: Danial Kalzhan
-- Участник 2: Eraly Karkinbayev
+- Участник 2: Yerali Karkinbayev
 - Участник 3: Aknur Galymzhankyzy
 
 Проект разрабатывался с помощью Codex.
